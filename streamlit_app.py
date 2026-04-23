@@ -4,6 +4,7 @@ import io
 import json
 import os
 import re
+import time
 from pathlib import Path
 from typing import Iterable
 
@@ -26,6 +27,23 @@ except Exception:  # pragma: no cover - optional dependency at runtime
 APP_TITLE = "IA CSV Converter"
 DEFAULT_OUTPUT_NAME = "converted_data.csv"
 DEFAULT_GOOGLE_MODEL = "gemini-2.5-flash"
+GOOGLE_AI_RETRY_DELAYS = (1.0, 2.0)
+GOOGLE_MODEL_OPTIONS = [
+    "gemini-2.5-flash-lite",
+    "gemini-2.5-flash",
+    "gemini-2.5-flash-lite-preview-09-2025",
+    "gemini-2.5-flash-preview-09-2025",
+]
+FALLBACK_MODEL_CHAINS = {
+    "Aucun": [],
+    "Eco": ["gemini-2.5-flash-lite"],
+    "Eco+": ["gemini-2.5-flash-lite", "gemini-2.5-flash"],
+    "Robuste": [
+        "gemini-2.5-flash-lite",
+        "gemini-2.5-flash",
+        "gemini-2.5-flash-lite-preview-09-2025",
+    ],
+}
 
 
 def clean_column_name(value: object) -> str:
@@ -220,28 +238,83 @@ def dataframe_from_ai_payload(payload: dict[str, object]) -> pd.DataFrame:
     return normalize_dataframe(df)
 
 
+def format_google_ai_error(error: Exception) -> str:
+    message = str(error)
+    upper_message = message.upper()
+
+    if "503" in upper_message or "UNAVAILABLE" in upper_message or "HIGH DEMAND" in upper_message:
+        return (
+            "Google AI est temporairement indisponible ou surcharge. "
+            "L'application conserve le resultat local. Reessaie dans quelques instants "
+            "ou teste un autre modele Google."
+        )
+
+    if "401" in upper_message or "403" in upper_message or "API KEY" in upper_message:
+        return "La cle Google API semble invalide ou non autorisee pour ce modele."
+
+    if "429" in upper_message or "RESOURCE_EXHAUSTED" in upper_message:
+        return "Le quota Google AI semble atteint pour le moment. Reessaie plus tard."
+
+    return f"Conversion IA impossible : {message}"
+
+
 def convert_with_google_ai(raw_text: str, api_key: str, model_name: str) -> pd.DataFrame:
     if genai is None or types is None:
         raise RuntimeError("Le SDK Google GenAI n'est pas installe. Ajoute `google-genai`.")
 
     client = genai.Client(api_key=api_key)
-    response = client.models.generate_content(
-        model=model_name,
-        contents=build_ai_prompt(raw_text),
-        config=types.GenerateContentConfig(
-            temperature=0.2,
-            response_mime_type="application/json",
-        ),
-    )
+    last_error: Exception | None = None
 
-    if not getattr(response, "text", None):
-        raise RuntimeError("Le modele Google n'a retourne aucun texte exploitable.")
+    for attempt, delay in enumerate((0.0, *GOOGLE_AI_RETRY_DELAYS), start=1):
+        if delay:
+            time.sleep(delay)
 
-    payload = json.loads(response.text)
-    return dataframe_from_ai_payload(payload)
+        try:
+            response = client.models.generate_content(
+                model=model_name,
+                contents=build_ai_prompt(raw_text),
+                config=types.GenerateContentConfig(
+                    temperature=0.2,
+                    response_mime_type="application/json",
+                ),
+            )
+
+            if not getattr(response, "text", None):
+                raise RuntimeError("Le modele Google n'a retourne aucun texte exploitable.")
+
+            payload = json.loads(response.text)
+            return dataframe_from_ai_payload(payload)
+        except Exception as exc:
+            last_error = exc
+            if attempt == len(GOOGLE_AI_RETRY_DELAYS) + 1:
+                break
+
+    assert last_error is not None
+    raise last_error
 
 
-def render_sidebar() -> tuple[str, str, bool, bool, str, str]:
+def try_google_models(raw_text: str, api_key: str, preferred_model: str, fallback_mode: str) -> tuple[pd.DataFrame, str]:
+    models_to_try = [preferred_model]
+    for candidate in FALLBACK_MODEL_CHAINS.get(fallback_mode, []):
+        if candidate not in models_to_try:
+            models_to_try.append(candidate)
+
+    last_error: Exception | None = None
+    for model_name in models_to_try:
+        try:
+            return convert_with_google_ai(raw_text, api_key, model_name), model_name
+        except Exception as exc:
+            last_error = exc
+            message = str(exc).upper()
+            # Retry another model only for transient overload or quota-style issues.
+            if not any(token in message for token in ("503", "UNAVAILABLE", "429", "RESOURCE_EXHAUSTED", "HIGH DEMAND")):
+                raise
+
+    assert last_error is not None
+    raise last_error
+
+
+def render_sidebar() -> tuple[str, str, bool, bool, str, str, str]:
     st.sidebar.header("Parametres")
     source_mode = st.sidebar.radio(
         "Source",
@@ -255,7 +328,18 @@ def render_sidebar() -> tuple[str, str, bool, bool, str, str]:
     )
     has_header = st.sidebar.checkbox("La premiere ligne contient les en-tetes", value=True)
     use_ai = st.sidebar.checkbox("Utiliser Google AI pour structurer", value=False)
-    google_model = st.sidebar.text_input("Modele Google", value=DEFAULT_GOOGLE_MODEL)
+    google_model = st.sidebar.selectbox(
+        "Modele Google",
+        options=GOOGLE_MODEL_OPTIONS,
+        index=GOOGLE_MODEL_OPTIONS.index(DEFAULT_GOOGLE_MODEL),
+        help="Modeles Google recommandes pour garder un cout faible.",
+    )
+    fallback_mode = st.sidebar.selectbox(
+        "Fallback modele",
+        options=list(FALLBACK_MODEL_CHAINS.keys()),
+        index=list(FALLBACK_MODEL_CHAINS.keys()).index("Eco+"),
+        help="Essaie automatiquement un autre modele si le premier est surcharge.",
+    )
     google_api_key = st.sidebar.text_input(
         "Google API key",
         value=os.getenv("GOOGLE_API_KEY", ""),
@@ -269,6 +353,7 @@ def render_sidebar() -> tuple[str, str, bool, bool, str, str]:
         use_ai,
         google_model.strip() or DEFAULT_GOOGLE_MODEL,
         google_api_key.strip(),
+        fallback_mode,
     )
 
 
@@ -299,7 +384,7 @@ def main() -> None:
     st.set_page_config(page_title=APP_TITLE, page_icon="📊", layout="wide")
     render_intro()
 
-    source_mode, delimiter, has_header, use_ai, google_model, google_api_key = render_sidebar()
+    source_mode, delimiter, has_header, use_ai, google_model, google_api_key, fallback_mode = render_sidebar()
 
     df = pd.DataFrame()
     source_label = ""
@@ -341,10 +426,12 @@ def main() -> None:
         else:
             try:
                 with st.spinner(f"Structuration via Google AI ({google_model})..."):
-                    df = convert_with_google_ai(raw_text_for_ai, google_api_key, google_model)
-                    source_label = f"google_ai:{google_model}"
+                    df, used_model = try_google_models(raw_text_for_ai, google_api_key, google_model, fallback_mode)
+                    source_label = f"google_ai:{used_model}"
             except Exception as exc:
-                st.error(f"Conversion IA impossible : {exc}")
+                st.warning(format_google_ai_error(exc))
+                if source_label:
+                    st.info(f"Affichage du resultat local extrait depuis : {source_label}")
 
     if df.empty:
         st.info("Ajoute un fichier ou colle du texte pour generer un tableau.")

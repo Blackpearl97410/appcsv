@@ -97,6 +97,13 @@ Par consequent, l'integration de cette application cible l'API Google AI avec un
 
 Si tu veux utiliser un vrai modele Gemma open-weight en local ou via une autre infra, ce sera un branchement different.
 
+Pour limiter les couts, l'application peut aussi utiliser en priorite :
+
+- `gemini-2.5-flash-lite`
+- `gemini-2.5-flash`
+
+Un fallback entre plusieurs modeles peut etre configure dans la barre laterale pour contourner plus facilement les surcharges temporaires.
+
 ## Lancement
 
 Lancement local :
@@ -122,73 +129,6 @@ Quand Google AI est active, l'application peut demander au modele de reorganiser
 
 ## Prochaines etapes recommandees
 
-- preciser le fournisseur IA retenu,
-- ajouter un exemple d'entree et de CSV de sortie,
-- documenter la gestion des erreurs et limites du parsing,
-- gerer les PDF complexes ou scannes,
-- proposer un mapping manuel des colonnes avant export.
-
-## Licence
-
-A definir.- `pandas` pour la manipulation tabulaire
-- `openpyxl` pour Excel
-- `pypdf` pour l'extraction texte depuis des PDF simples
-
-## Arborescence locale actuelle
-
-Dans ce dossier local, les fichiers principaux sont actuellement :
-
-- `readme.md`
-- `memory.md`
-- `streamlit_app.py`
-- `requirements.txt`
-
-Chemin local de travail memorise pour l'application :
-
-`/Users/alexandrepaviel/Desktop/OF/application CSV`
-
-## Installation
-
-Installation locale :
-
-```bash
-git clone https://github.com/Blackpearl97410/appcsv.git
-cd appcsv
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-```
-
-## Configuration
-
-La version actuelle fonctionne sans cle API.
-
-Une integration OpenAI ou Gemini pourra etre ajoutee ensuite pour enrichir l'extraction et la structuration automatique.
-
-## Lancement
-
-Lancement local :
-
-```bash
-streamlit run streamlit_app.py
-```
-
-## Cas d'usage
-
-- Convertir un document texte en tableau CSV
-- Extraire des donnees de factures ou listes simples
-- Reorganiser un contenu brut en colonnes coherentes
-- Gagner du temps sur du nettoyage manuel repetitif
-
-## Etat actuel
-
-Le projet dispose maintenant d'une premiere base fonctionnelle en local.
-
-Cette version repose sur des heuristiques locales et sur des parsers simples. Elle permet deja de charger, nettoyer, visualiser et exporter des donnees sous forme de CSV.
-
-## Prochaines etapes recommandees
-
-- ajouter une couche IA pour mieux inferer les colonnes,
 - preciser le fournisseur IA retenu,
 - ajouter un exemple d'entree et de CSV de sortie,
 - documenter la gestion des erreurs et limites du parsing,
